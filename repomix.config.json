@@ -18,6 +18,7 @@
       "build/**",
       ".git/**",
       ".env",
+      ".env.local",
       "*.xml",
       "*.webp",
       "*.png",
