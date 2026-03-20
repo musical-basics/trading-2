@@ -438,22 +438,106 @@ with tab2:
 
 
 # ─────────────────────────────────────────────────────────────
-# TAB 3: Strategy Comparison (kept from Level 1)
+# TAB 3: Strategy Comparison (Level 1 + Level 2)
 # ─────────────────────────────────────────────────────────────
 with tab3:
-    st.markdown("## ⚔️ Strategy Comparison: SMA Crossover vs Pullback")
+    st.markdown("## ⚔️ Strategy Comparison")
     st.divider()
 
     has_sma = table_exists("strategy_signals")
     has_pb = table_exists("pullback_signals")
+    has_xs = table_exists("cross_sectional_scores")
 
-    if not has_sma and not has_pb:
-        st.info("ℹ️ Compute both strategies first (Tab 1) to compare them.")
+    if not has_sma and not has_pb and not has_xs:
+        st.info("ℹ️ Compute strategies first (Tab 1) to compare them.")
     else:
         conn = get_db_connection()
         available_tickers = pd.read_sql_query(
             "SELECT DISTINCT ticker FROM daily_bars ORDER BY ticker", conn
         )["ticker"].tolist()
+
+        # ── L/S Z-Score Strategy (portfolio-level) ───────────
+        if has_xs:
+            st.markdown("### 🧬 L/S Monthly Z-Score Strategy")
+            st.caption("Long the cheapest, short the most expensive — rebalance monthly")
+
+            ls_col1, ls_col2 = st.columns(2)
+            with ls_col1:
+                n_long = st.number_input("Stocks to LONG", min_value=1, max_value=10, value=2, step=1, key="ls_n_long")
+            with ls_col2:
+                n_short = st.number_input("Stocks to SHORT", min_value=1, max_value=10, value=2, step=1, key="ls_n_short")
+
+            from src.strategies.ls_zscore_strategy import simulate_ls_zscore
+            ls_eq, ls_trades = simulate_ls_zscore(n_long=int(n_long), n_short=int(n_short))
+
+            if not ls_eq.empty:
+                ls_eq["date"] = pd.to_datetime(ls_eq["date"])
+                ls_total = ls_eq["equity"].iloc[-1] / 10000 - 1
+
+                # Build SPY Buy & Hold benchmark over the same period
+                spy_bench = pd.read_sql_query("""
+                    SELECT date, adj_close FROM daily_bars
+                    WHERE ticker = 'SPY' ORDER BY date
+                """, conn, parse_dates=["date"])
+
+                if not spy_bench.empty:
+                    spy_bench = spy_bench[spy_bench["date"] >= ls_eq["date"].iloc[0]]
+                    spy_bench["daily_return"] = spy_bench["adj_close"].pct_change()
+                    spy_bench["equity"] = 10000 * (1 + spy_bench["daily_return"].fillna(0)).cumprod()
+                    spy_total = spy_bench["equity"].iloc[-1] / 10000 - 1
+                else:
+                    spy_total = None
+
+                # Compute Sharpe and MaxDD for L/S
+                ls_returns = ls_eq["daily_return"]
+                ls_sharpe = ls_returns.mean() / ls_returns.std() * np.sqrt(252) if ls_returns.std() > 0 else 0
+                ls_running_max = ls_eq["equity"].expanding().max()
+                ls_max_dd = (1 - ls_eq["equity"] / ls_running_max).max()
+
+                # Metrics row
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("L/S Z-Score", f"{ls_total:+.1%}",
+                          delta=f"{(ls_total - (spy_total or 0)):+.1%} vs SPY" if spy_total is not None else None)
+                m2.metric("SPY B&H", f"{spy_total:+.1%}" if spy_total is not None else "N/A")
+                m3.metric("Sharpe", f"{ls_sharpe:.2f}")
+                m4.metric("Max Drawdown", f"{ls_max_dd:.2%}")
+
+                # Equity curve: L/S vs SPY
+                fig_ls = go.Figure()
+                fig_ls.add_trace(go.Scatter(
+                    x=ls_eq["date"], y=ls_eq["equity"],
+                    name="L/S Z-Score", line=dict(color="#E040FB", width=2.5),
+                ))
+                if not spy_bench.empty:
+                    fig_ls.add_trace(go.Scatter(
+                        x=spy_bench["date"], y=spy_bench["equity"],
+                        name="SPY Buy & Hold", line=dict(color="#FF9800", width=2, dash="dash"),
+                    ))
+                fig_ls.update_layout(template="plotly_dark", height=450,
+                    yaxis_title="Portfolio Value ($)",
+                    title="L/S Monthly Rebalance vs SPY ($10,000)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_ls, use_container_width=True)
+
+                # Monthly trade log
+                if ls_trades:
+                    with st.expander("📒 Monthly Trade Log", expanded=False):
+                        trade_rows = []
+                        for t in ls_trades:
+                            trade_rows.append({
+                                "Month": t["month"],
+                                "LONG": ", ".join(t["long"]),
+                                "Long Z-Scores": ", ".join(f"{z:.2f}" for z in t["long_zscores"]),
+                                "SHORT": ", ".join(t["short"]),
+                                "Short Z-Scores": ", ".join(f"{z:.2f}" for z in t["short_zscores"]),
+                            })
+                        st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, height=400)
+            else:
+                st.info("ℹ️ Not enough cross-sectional data. Run Phase 2 first.")
+
+        # ── Per-Ticker Comparison (Level 1 strategies) ───────
+        st.divider()
+        st.markdown("### 📊 Per-Ticker: SMA Crossover vs Pullback")
 
         compare_ticker = st.selectbox("Select Ticker", available_tickers, index=0, key="compare_ticker")
 
@@ -498,7 +582,6 @@ with tab3:
 
             bh_cum = df_base["buyhold_equity"].iloc[-1] / 10000 - 1
 
-            st.markdown("### 📊 Performance Summary")
             c1, c2, c3 = st.columns(3)
             c1.metric("Buy & Hold", f"{bh_cum:+.1%}")
             c2.metric("SMA Crossover", f"{sma_cum:+.1%}" if sma_cum is not None else "N/A",
