@@ -55,3 +55,10 @@ FILING_DELAY_DAYS = 45          # Proxy SEC filing delay (period_end + 45d)
 # ── Liquidity Gating ────────────────────────────────────────
 ADV_LOOKBACK = 30               # 30-day Average Daily Volume lookback
 ADV_MAX_PCT = 0.01              # Max trade size = 1% of 30-day ADV
+
+# ── WFO Window Parameters ───────────────────────────────────
+WFO_TRAIN_YEARS = 2             # Lookback training window
+WFO_TEST_YEARS = 1              # Forward test window
+WFO_STEP_YEARS = 1              # Roll step
+WFO_ZSCORE_CANDIDATES = [-0.5, -0.75, -1.0, -1.25, -1.5]
+
