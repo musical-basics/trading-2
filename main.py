@@ -1,12 +1,13 @@
 """
-main.py — Level 1 Walking Skeleton: CLI Pipeline Runner
+main.py — Level 2 Quant Sandbox: CLI Pipeline Runner
 
 Orchestrates all phases sequentially:
   Phase 0: Database Initialization
-  Phase 1: Data Ingestion (yfinance → SQLite)
-  Phase 2: Signal Generation (SMA Crossover + Pullback)
-  Phase 3: Simulation & Risk Limits
-  Phase 4: Execution Routing (Alpaca Paper / Dry-Run)
+  Phase 1a: EOD Price Ingestion (yfinance → SQLite)
+  Phase 1b: Quarterly Fundamental Ingestion (yfinance → SQLite)
+  Phase 2: Cross-Sectional Scoring (merge_asof + EV/Sales Z-scores)
+  Phase 3: Walk-Forward Optimization Tournament
+  Phase 4: Portfolio Rebalance → Execution Routing (Alpaca Paper / Dry-Run)
 
 Run with: python main.py
 """
@@ -18,8 +19,15 @@ from datetime import datetime
 # Ensure project root is on the path so src imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.pipeline import db_init, data_ingestion, simulation, execution
-from src.strategies import strategy, pullback_strategy
+from src.pipeline import (
+    db_init,
+    data_ingestion,
+    fundamental_ingestion,
+    cross_sectional_scoring,
+    wfo_backtester,
+    portfolio_rebalancer,
+    execution,
+)
 
 
 def main():
@@ -27,7 +35,7 @@ def main():
 
     print()
     print("╔" + "═" * 58 + "╗")
-    print("║  LEVEL 1 — WALKING SKELETON PIPELINE                    ║")
+    print("║  LEVEL 2 — QUANT SANDBOX PIPELINE                       ║")
     print("║  Started: " + start_time.strftime("%Y-%m-%d %H:%M:%S") + " " * 27 + "║")
     print("╚" + "═" * 58 + "╝")
     print()
@@ -35,18 +43,21 @@ def main():
     # Phase 0: Initialize Database
     db_init.init_db()
 
-    # Phase 1: Ingest EOD data from yfinance
+    # Phase 1a: Ingest EOD prices
     data_ingestion.ingest()
 
-    # Phase 2: Compute strategy signals
-    strategy.compute_signals()
-    pullback_strategy.compute_pullback_signals()
+    # Phase 1b: Ingest quarterly fundamentals
+    fundamental_ingestion.ingest_fundamentals()
 
-    # Phase 3: Simulate and filter through risk limits
-    approved_orders = simulation.simulate_and_filter()
+    # Phase 2: Compute cross-sectional EV/Sales Z-scores
+    cross_sectional_scoring.compute_cross_sectional_scores()
 
-    # Phase 4: Route orders to Alpaca (or dry-run)
-    execution.route_orders(approved_orders)
+    # Phase 3: Walk-Forward Optimization tournament
+    wfo_backtester.run_wfo_tournament()
+
+    # Phase 4: Portfolio rebalance → execution
+    orders = portfolio_rebalancer.rebalance_portfolio()
+    execution.route_orders(orders)
 
     # Done
     end_time = datetime.now()
