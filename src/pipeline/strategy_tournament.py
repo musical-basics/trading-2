@@ -1,8 +1,9 @@
 """
-strategy_tournament.py — Run all 4 strategies as portfolio-level backtests
+strategy_tournament.py — Run all 5 strategies as portfolio-level backtests
 and produce comparable metrics (Sharpe, MaxDD, CAGR, Total Return).
 
 Strategies:
+  0. Buy & Hold (equal-weight) — baseline benchmark
   1. EV/Sales Z-Score (long-only) — existing WFO approach
   2. L/S Z-Score — long cheapest, short most expensive, monthly rebalance
   3. SMA Crossover (equal-weight) — portfolio of all tickers, equal allocation
@@ -46,6 +47,47 @@ def _compute_metrics(equity_series, daily_returns):
         "total_return": total_return,
         "trading_days": trading_days,
     }
+
+
+def run_buyhold_portfolio(conn, starting_capital=10000):
+    """
+    Buy & Hold (equal-weight): hold all tickers in the universe
+    with 1/N allocation from day 1. No signals needed.
+    """
+    tickers = pd.read_sql_query(
+        "SELECT DISTINCT ticker FROM daily_bars WHERE ticker != 'SPY' ORDER BY ticker", conn
+    )["ticker"].tolist()
+
+    if not tickers:
+        return pd.DataFrame(), {}
+
+    n = len(tickers)
+    all_daily = []
+
+    for ticker in tickers:
+        df = pd.read_sql_query("""
+            SELECT date, adj_close FROM daily_bars
+            WHERE ticker = ? ORDER BY date
+        """, conn, params=(ticker,), parse_dates=["date"])
+
+        if df.empty:
+            continue
+
+        df["daily_return"] = df["adj_close"].pct_change()
+        df["weighted_return"] = df["daily_return"] / n
+        all_daily.append(df[["date", "weighted_return"]].copy())
+
+    if not all_daily:
+        return pd.DataFrame(), {}
+
+    combined = pd.concat(all_daily)
+    portfolio = combined.groupby("date")["weighted_return"].sum().reset_index()
+    portfolio.columns = ["date", "daily_return"]
+    portfolio = portfolio.sort_values("date").reset_index(drop=True)
+    portfolio["equity"] = starting_capital * (1 + portfolio["daily_return"].fillna(0)).cumprod()
+
+    metrics = _compute_metrics(portfolio["equity"], portfolio["daily_return"].fillna(0))
+    return portfolio, metrics
 
 
 def run_sma_portfolio(conn, starting_capital=10000):
@@ -188,11 +230,19 @@ def run_ev_sales_longonly(conn, starting_capital=10000):
 
 def run_tournament(n_long=2, n_short=2):
     """
-    Run all 4 strategies and save results to wfo_results.
+    Run all 5 strategies and save results to wfo_results.
     Returns dict of {strategy_name: (equity_df, metrics)}.
     """
     conn = sqlite3.connect(DB_PATH)
     results = {}
+
+    # Strategy 0: Buy & Hold (equal-weight baseline)
+    try:
+        eq, met = run_buyhold_portfolio(conn)
+        if not eq.empty:
+            results["Buy & Hold (EW)"] = (eq, met)
+    except Exception as e:
+        print(f"  ⚠ Buy & Hold failed: {e}")
 
     # Strategy 1: EV/Sales Z-Score (long-only)
     try:

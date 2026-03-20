@@ -1,4 +1,4 @@
-"""WFO Tournament — Strategy comparison across all 4 strategies."""
+"""WFO Tournament — Strategy comparison across all 5 strategies."""
 
 import streamlit as st
 import pandas as pd
@@ -45,6 +45,13 @@ else:
         any_results = False
 
         strats = {}
+        # Buy & Hold baseline
+        try:
+            eq, met = strategy_tournament.run_buyhold_portfolio(conn)
+            if not eq.empty:
+                strats["Buy & Hold (EW)"] = (eq, met)
+        except Exception:
+            pass
         if has_xs:
             try:
                 eq, met = strategy_tournament.run_ev_sales_longonly(conn)
@@ -114,6 +121,7 @@ else:
         st.markdown("### 📈 Equity Curves ($10,000)")
 
         colors = {
+            "Buy & Hold (EW)": "#9E9E9E",
             "EV/Sales Long-Only": "#2196F3",
             "L/S Z-Score": "#E040FB",
             "SMA Crossover (EW)": "#FF9800",
