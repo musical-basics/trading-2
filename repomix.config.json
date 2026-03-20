@@ -1,0 +1,31 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml"
+  },
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "*.db",
+      "*.sqlite",
+      "*.pyc",
+      "__pycache__/**",
+      ".venv/**",
+      "venv/**",
+      "node_modules/**",
+      "*.egg-info/**",
+      "dist/**",
+      "build/**",
+      ".git/**",
+      ".env",
+      "*.xml",
+      "*.webp",
+      "*.png",
+      "*.jpg",
+      "*.gif",
+      ".gemini/**",
+      ".agents/**",
+      "repomix-output.xml"
+    ]
+  }
+}
