@@ -169,110 +169,103 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 # TAB 1: Data & Signals
 # ─────────────────────────────────────────────────────────────
 with tab1:
-    st.markdown("## Phase 1 & 2: Data Ingestion & Signal Generation")
+    st.markdown("## 📥 Data Pipeline")
     st.divider()
 
-    col_btn1, col_btn2 = st.columns(2)
+    # ── Primary Action: Run Full Pipeline ────────────────────
+    if st.button("🚀 Run Full Pipeline", type="primary", use_container_width=True):
+        progress = st.progress(0, text="Initializing database...")
+        db_init.init_db()
 
-    with col_btn1:
-        if st.button("🗃️ Initialize Database", use_container_width=True):
-            with st.spinner("Creating database tables..."):
+        progress.progress(15, text="Ingesting EOD prices...")
+        data_ingestion.UNIVERSE = universe_list
+        data_ingestion.ingest()
+
+        progress.progress(35, text="Ingesting quarterly fundamentals...")
+        fundamental_ingestion.ingest_fundamentals(tickers=universe_list)
+
+        progress.progress(55, text="Computing cross-sectional EV/Sales Z-scores...")
+        cross_sectional_scoring.compute_cross_sectional_scores()
+
+        progress.progress(70, text="Computing SMA crossover signals...")
+        strategy.compute_signals()
+
+        progress.progress(85, text="Computing pullback strategy signals...")
+        pullback_strategy.RSI_PERIOD = int(rsi_period)
+        pullback_strategy.RSI_ENTRY_THRESHOLD = int(rsi_entry)
+        pullback_strategy.RSI_EXIT_THRESHOLD = int(rsi_exit)
+        pullback_strategy.compute_pullback_signals()
+
+        progress.progress(100, text="✅ Pipeline complete!")
+        st.success(f"✅ Full pipeline executed for {len(universe_list)} tickers!")
+        st.rerun()
+
+    # ── Pipeline Status ──────────────────────────────────────
+    if os.path.exists(DB_PATH):
+        st.markdown("### Pipeline Status")
+        s1, s2, s3, s4, s5 = st.columns(5)
+        bars = get_table_count("daily_bars")
+        funds = get_table_count("quarterly_fundamentals")
+        scores = get_table_count("cross_sectional_scores")
+        sma_sig = get_table_count("strategy_signals")
+        pb_sig = get_table_count("pullback_signals")
+
+        s1.metric("Daily Bars", f"{bars:,}" if bars else "—")
+        s2.metric("Fundamentals", f"{funds:,}" if funds else "—")
+        s3.metric("XS Scores", f"{scores:,}" if scores else "—")
+        s4.metric("SMA Signals", f"{sma_sig:,}" if sma_sig else "—")
+        s5.metric("Pullback Sig", f"{pb_sig:,}" if pb_sig else "—")
+    else:
+        st.info("ℹ️ Click **Run Full Pipeline** to initialize the database and ingest data.")
+
+    # ── Individual Steps (power users) ───────────────────────
+    with st.expander("⚙️ Run Individual Steps", expanded=False):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🗃️ Init DB Only", use_container_width=True):
                 db_init.init_db()
-            st.success("✅ Database initialized!")
-            st.rerun()
-
-    with col_btn2:
-        if st.button("📥 Run Phase 1a: Ingest Prices", use_container_width=True):
-            with st.spinner("Fetching EOD data from yfinance..."):
-                data_ingestion.UNIVERSE = universe_list
-                data_ingestion.ingest()
-            st.success(f"✅ Prices ingested for {len(universe_list)} tickers!")
-            st.rerun()
-
-    col_btn3, col_btn4 = st.columns(2)
-
-    with col_btn3:
-        if st.button("📥 Run Phase 1b: Ingest Fundamentals", use_container_width=True):
-            if not table_exists("daily_bars"):
-                st.error("❌ No data in daily_bars. Run Phase 1a first!")
-            else:
-                with st.spinner("Fetching quarterly financials..."):
-                    fundamental_ingestion.ingest_fundamentals(tickers=universe_list)
-                st.success("✅ Quarterly fundamentals ingested!")
+                st.success("✅ Database initialized!")
                 st.rerun()
-
-    with col_btn4:
-        if st.button("🧮 Run Phase 2: Cross-Sectional Scores", use_container_width=True):
-            if not table_exists("quarterly_fundamentals"):
-                st.error("❌ No fundamentals. Run Phase 1b first!")
-            else:
-                with st.spinner("Computing EV/Sales Z-scores..."):
-                    cross_sectional_scoring.compute_cross_sectional_scores()
-                st.success("✅ Cross-sectional scores computed!")
+            if st.button("📥 Ingest Fundamentals Only", use_container_width=True):
+                fundamental_ingestion.ingest_fundamentals(tickers=universe_list)
+                st.success("✅ Fundamentals ingested!")
                 st.rerun()
-
-    col_btn5, col_btn6 = st.columns(2)
-
-    with col_btn5:
-        if st.button("🧮 SMA Crossover Signals", use_container_width=True):
-            if not table_exists("daily_bars"):
-                st.error("❌ No data in daily_bars. Run Phase 1a first!")
-            else:
-                with st.spinner("Computing SMA crossover signals..."):
-                    strategy.compute_signals()
+            if st.button("🧮 SMA Signals Only", use_container_width=True):
+                strategy.compute_signals()
                 st.success("✅ SMA signals computed!")
                 st.rerun()
-
-    with col_btn6:
-        if st.button("🎯 Pullback Strategy Signals", use_container_width=True):
-            if not table_exists("daily_bars"):
-                st.error("❌ No data in daily_bars. Run Phase 1a first!")
-            else:
-                with st.spinner("Computing pullback strategy signals..."):
-                    pullback_strategy.RSI_PERIOD = int(rsi_period)
-                    pullback_strategy.RSI_ENTRY_THRESHOLD = int(rsi_entry)
-                    pullback_strategy.RSI_EXIT_THRESHOLD = int(rsi_exit)
-                    pullback_strategy.compute_pullback_signals()
+        with col_b:
+            if st.button("📥 Ingest Prices Only", use_container_width=True):
+                data_ingestion.UNIVERSE = universe_list
+                data_ingestion.ingest()
+                st.success("✅ Prices ingested!")
+                st.rerun()
+            if st.button("🧮 XS Scores Only", use_container_width=True):
+                cross_sectional_scoring.compute_cross_sectional_scores()
+                st.success("✅ Cross-sectional scores computed!")
+                st.rerun()
+            if st.button("🎯 Pullback Signals Only", use_container_width=True):
+                pullback_strategy.RSI_PERIOD = int(rsi_period)
+                pullback_strategy.RSI_ENTRY_THRESHOLD = int(rsi_entry)
+                pullback_strategy.RSI_EXIT_THRESHOLD = int(rsi_exit)
+                pullback_strategy.compute_pullback_signals()
                 st.success("✅ Pullback signals computed!")
                 st.rerun()
 
+    # ── Data Previews ────────────────────────────────────────
     st.divider()
-
-    # Data Previews
-    if table_exists("daily_bars"):
-        with st.expander("📋 Preview: daily_bars", expanded=False):
-            conn = get_db_connection()
-            st.dataframe(pd.read_sql_query(
-                "SELECT * FROM daily_bars ORDER BY date DESC LIMIT 100", conn
-            ), use_container_width=True, height=400)
-            conn.close()
-
-    if table_exists("quarterly_fundamentals"):
-        with st.expander("📋 Preview: quarterly_fundamentals", expanded=False):
-            conn = get_db_connection()
-            st.dataframe(pd.read_sql_query(
-                "SELECT * FROM quarterly_fundamentals ORDER BY filing_date DESC LIMIT 100", conn
-            ), use_container_width=True, height=400)
-            conn.close()
-
-    if table_exists("cross_sectional_scores"):
-        with st.expander("📋 Preview: cross_sectional_scores", expanded=False):
-            conn = get_db_connection()
-            st.dataframe(pd.read_sql_query(
-                "SELECT * FROM cross_sectional_scores ORDER BY date DESC, ev_sales_zscore ASC LIMIT 100", conn
-            ), use_container_width=True, height=400)
-            conn.close()
-
-    if table_exists("strategy_signals"):
-        with st.expander("📋 Preview: strategy_signals", expanded=False):
-            conn = get_db_connection()
-            st.dataframe(pd.read_sql_query(
-                "SELECT * FROM strategy_signals ORDER BY date DESC LIMIT 100", conn
-            ), use_container_width=True, height=400)
-            conn.close()
-
-    if not table_exists("daily_bars"):
-        st.info("ℹ️ Click 'Initialize Database' then 'Ingest Prices' to get started.")
+    preview_tables = {
+        "daily_bars": "SELECT * FROM daily_bars ORDER BY date DESC LIMIT 100",
+        "quarterly_fundamentals": "SELECT * FROM quarterly_fundamentals ORDER BY filing_date DESC LIMIT 100",
+        "cross_sectional_scores": "SELECT * FROM cross_sectional_scores ORDER BY date DESC, ev_sales_zscore ASC LIMIT 100",
+        "strategy_signals": "SELECT * FROM strategy_signals ORDER BY date DESC LIMIT 100",
+    }
+    for table_name, query in preview_tables.items():
+        if table_exists(table_name):
+            with st.expander(f"📋 Preview: {table_name}", expanded=False):
+                conn = get_db_connection()
+                st.dataframe(pd.read_sql_query(query, conn), use_container_width=True, height=400)
+                conn.close()
 
 
 # ─────────────────────────────────────────────────────────────
