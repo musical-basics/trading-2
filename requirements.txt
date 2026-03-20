@@ -1,5 +1,6 @@
 pandas
 numpy
+scipy
 yfinance
 alpaca-trade-api
 python-dotenv
