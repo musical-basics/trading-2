@@ -17,7 +17,13 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(PROJECT_ROOT, "data", "level2_trading.db")
 
 # ── Environment Variables ────────────────────────────────────
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+# Load .env.local first (takes priority), then .env as fallback
+_env_local = os.path.join(PROJECT_ROOT, ".env.local")
+_env_default = os.path.join(PROJECT_ROOT, ".env")
+if os.path.exists(_env_local):
+    load_dotenv(_env_local)
+else:
+    load_dotenv(_env_default)
 
 # ── Default Universe (Expanded S&P 50 Subset) ───────────────
 DEFAULT_UNIVERSE = [
