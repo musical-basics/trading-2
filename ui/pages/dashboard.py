@@ -88,21 +88,4 @@ if table_exists("cross_sectional_scores"):
     except Exception:
         st.caption("Run Phase 2 to see strategy results.")
 
-# ── Portfolio positions ──────────────────────────────────────
-if table_exists("paper_executions"):
-    st.divider()
-    st.markdown("### 🏦 Current Positions")
-    conn = get_db_connection()
-    try:
-        positions_df = pd.read_sql_query("""
-            SELECT ticker,
-                   SUM(CASE WHEN action='BUY' THEN quantity ELSE -quantity END) as net_shares
-            FROM paper_executions GROUP BY ticker HAVING net_shares > 0
-        """, conn)
-        if not positions_df.empty:
-            st.dataframe(positions_df, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No open positions.")
-    except Exception:
-        st.caption("No execution data yet.")
-    conn.close()
+
