@@ -10,6 +10,7 @@ Falls back to yfinance if no key is set.
 
 import os
 import sqlite3
+import time
 import requests
 import pandas as pd
 from datetime import timedelta
@@ -55,9 +56,13 @@ def ingest_fundamentals_polygon(tickers=None):
     total_inserted = 0
     failed_tickers = []
 
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
+        # Polygon free tier: 5 calls/min — wait 13s between calls
+        if i > 0:
+            time.sleep(13)
+
         try:
-            print(f"  Fetching {ticker}...", end=" ")
+            print(f"  Fetching {ticker} ({i+1}/{len(tickers)})...", end=" ")
             results = _polygon_get(ticker)
 
             if not results:
@@ -108,8 +113,41 @@ def ingest_fundamentals_polygon(tickers=None):
             print(f"✓ {ticker_rows} quarters stored.")
 
         except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 403:
-                print("FAILED: API key invalid or rate limited")
+            if e.response is not None and e.response.status_code == 429:
+                print("RATE LIMITED — waiting 60s and retrying...")
+                time.sleep(60)
+                try:
+                    results = _polygon_get(ticker)
+                    ticker_rows = 0
+                    for filing in results:
+                        try:
+                            period_end_str = filing.get("end_date", "")[:10]
+                            if not period_end_str:
+                                continue
+                            period_end_date = pd.Timestamp(period_end_str)
+                            filing_date = period_end_date + timedelta(days=FILING_DELAY_DAYS)
+                            fin = filing.get("financials", {})
+                            income = fin.get("income_statement", {})
+                            balance = fin.get("balance_sheet", {})
+                            revenue = income.get("revenues", {}).get("value")
+                            total_debt = balance.get("long_term_debt", {}).get("value")
+                            cash = balance.get("cash", {}).get("value") or balance.get("cash_and_cash_equivalents", {}).get("value")
+                            shares = balance.get("common_stock_shares_outstanding", {}).get("value") or income.get("basic_average_shares", {}).get("value")
+                            cursor.execute("""INSERT OR REPLACE INTO quarterly_fundamentals
+                                (ticker, period_end_date, filing_date, revenue, total_debt, cash_and_equivalents, shares_outstanding)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                (ticker, period_end_date.strftime("%Y-%m-%d"), filing_date.strftime("%Y-%m-%d"), revenue, total_debt, cash, shares))
+                            ticker_rows += 1
+                        except Exception:
+                            continue
+                    conn.commit()
+                    total_inserted += ticker_rows
+                    print(f"  ✓ {ticker_rows} quarters stored (after retry).")
+                except Exception as e2:
+                    print(f"  Still failing: {e2}")
+                    failed_tickers.append(ticker)
+            elif e.response is not None and e.response.status_code == 403:
+                print("FAILED: API key invalid")
             else:
                 print(f"FAILED: {e}")
             failed_tickers.append(ticker)
