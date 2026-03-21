@@ -1,7 +1,7 @@
 """
 data_ingestion.py — Level 1 Phase 1: Data Ingestion
 
-Fetches 2 years of EOD market data from yfinance for the configured
+Fetches 5 years of EOD market data from yfinance for the configured
 ticker universe and upserts into the daily_bars SQLite table.
 """
 
@@ -17,7 +17,7 @@ UNIVERSE = list(DEFAULT_UNIVERSE)
 
 def ingest():
     """
-    Fetch 2 years of daily EOD data for each ticker in the universe
+    Fetch 5 years of daily EOD data for each ticker in the universe
     and upsert into the daily_bars table.
     """
     print("=" * 60)
@@ -27,7 +27,7 @@ def ingest():
     conn = sqlite3.connect(DB_PATH)
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=730)  # ~2 years
+    start_date = end_date - timedelta(days=1825)  # ~5 years
 
     total_inserted = 0
     failed_tickers = []

@@ -34,32 +34,48 @@ def _compute_metrics(daily_returns):
 
 def _get_date_windows(all_dates, train_frac=0.66):
     """
-    Given limited data (~14mo), create a single train/test split.
-    With more data, this would become a rolling loop.
+    Create train/test windows for WFO.
+
+    With <500 trading days (~2 years): single 66/33 train/test split.
+    With more data: rolling windows with ~63-day (3-month) step size,
+    each with a 6-month train window and 3-month test window.
     """
     n = len(all_dates)
     split = int(n * train_frac)
     if split < 20 or (n - split) < 10:
         return []
 
-    windows = [{
+    # For limited data: single honest train/test split
+    if n < 500:
+        return [{
+            "train_start": all_dates[0],
+            "train_end": all_dates[split - 1],
+            "test_start": all_dates[split],
+            "test_end": all_dates[-1],
+        }]
+
+    # For larger datasets: rolling non-overlapping windows
+    train_size = 126  # ~6 months
+    test_size = 63    # ~3 months
+    step_size = 63    # ~3 months (non-overlapping test blocks)
+
+    windows = []
+    i = 0
+    while i + train_size + test_size <= n:
+        windows.append({
+            "train_start": all_dates[i],
+            "train_end": all_dates[i + train_size - 1],
+            "test_start": all_dates[i + train_size],
+            "test_end": all_dates[min(i + train_size + test_size - 1, n - 1)],
+        })
+        i += step_size
+
+    return windows if windows else [{
         "train_start": all_dates[0],
         "train_end": all_dates[split - 1],
         "test_start": all_dates[split],
         "test_end": all_dates[-1],
     }]
-
-    # If enough data, add a second overlapping window
-    if n > 200:
-        split2 = int(n * 0.5)
-        windows.append({
-            "train_start": all_dates[int(n * 0.16)],
-            "train_end": all_dates[int(n * 0.66)],
-            "test_start": all_dates[int(n * 0.66) + 1],
-            "test_end": all_dates[-1],
-        })
-
-    return windows
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -494,7 +510,7 @@ def wfo_pullback(conn):
 # Run all WFO
 # ═══════════════════════════════════════════════════════════════
 def run_all_wfo():
-    """Run WFO for all 4 strategies. Returns list of result dicts."""
+    """Run WFO for all 4 strategies. Saves per-window results to wfo_results. Returns list of result dicts."""
     conn = sqlite3.connect(DB_PATH)
     results = []
 
@@ -506,6 +522,25 @@ def run_all_wfo():
         except Exception as e:
             print(f"  ⚠ {fn.__name__} failed: {e}")
 
+    # Save all WFO results to SQLite
+    cursor = conn.cursor()
+    for r in results:
+        strategy_id = "wfo_" + r["name"].lower().replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "")
+        cursor.execute("DELETE FROM wfo_results WHERE strategy_id = ?", (strategy_id,))
+        for w in r["windows"]:
+            # Parse window dates from "YYYY-MM-DD → YYYY-MM-DD"
+            parts = w["window"].split(" → ")
+            cursor.execute("""
+                INSERT INTO wfo_results
+                (strategy_id, test_window_start, test_window_end,
+                 sharpe_ratio, max_drawdown, cagr)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                strategy_id, parts[0], parts[1],
+                w["sharpe"], w["max_drawdown"], w["cagr"],
+            ))
+
+    conn.commit()
     conn.close()
     return results
 
