@@ -6,7 +6,7 @@ import os
 from ui.shared import get_db_connection, table_exists, get_table_count, render_sidebar, DB_PATH
 from src.pipeline import (
     db_init, data_ingestion, fundamental_ingestion,
-    cross_sectional_scoring,
+    fundamental_ingestion_fmp, cross_sectional_scoring,
 )
 from src.strategies import strategy, pullback_strategy
 
@@ -24,8 +24,8 @@ if st.button("🚀 Run Full Pipeline", type="primary", use_container_width=True)
     data_ingestion.UNIVERSE = cfg["universe"]
     data_ingestion.ingest()
 
-    progress.progress(35, text="Ingesting quarterly fundamentals...")
-    fundamental_ingestion.ingest_fundamentals(tickers=cfg["universe"])
+    progress.progress(35, text="Ingesting quarterly fundamentals (FMP if available)...")
+    fundamental_ingestion_fmp.ingest_fundamentals_fmp(tickers=cfg["universe"])
 
     progress.progress(55, text="Computing cross-sectional EV/Sales Z-scores...")
     cross_sectional_scoring.compute_cross_sectional_scores()
@@ -63,8 +63,8 @@ with st.expander("⚙️ Run Individual Steps", expanded=False):
             db_init.init_db()
             st.success("✅ Database initialized!")
             st.rerun()
-        if st.button("📥 Ingest Fundamentals Only", use_container_width=True):
-            fundamental_ingestion.ingest_fundamentals(tickers=cfg["universe"])
+        if st.button("📥 Ingest Fundamentals (FMP)", use_container_width=True):
+            fundamental_ingestion_fmp.ingest_fundamentals_fmp(tickers=cfg["universe"])
             st.success("✅ Fundamentals ingested!")
             st.rerun()
         if st.button("🧮 SMA Signals Only", use_container_width=True):

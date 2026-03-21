@@ -6,7 +6,7 @@ from datetime import datetime
 from ui.shared import get_db_connection, table_exists, render_sidebar
 from src.pipeline import (
     db_init, data_ingestion, fundamental_ingestion,
-    cross_sectional_scoring, wfo_backtester,
+    fundamental_ingestion_fmp, cross_sectional_scoring, wfo_backtester,
     portfolio_rebalancer, simulation, execution,
 )
 
@@ -94,7 +94,7 @@ with col_e2:
             db_init.init_db()
             data_ingestion.UNIVERSE = cfg["universe"]
             data_ingestion.ingest()
-            fundamental_ingestion.ingest_fundamentals(tickers=cfg["universe"])
+            fundamental_ingestion_fmp.ingest_fundamentals_fmp(tickers=cfg["universe"])
             cross_sectional_scoring.compute_cross_sectional_scores()
             wfo_backtester.run_wfo_tournament()
             orders = portfolio_rebalancer.rebalance_portfolio()
