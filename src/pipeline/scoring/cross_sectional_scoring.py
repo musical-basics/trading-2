@@ -37,7 +37,7 @@ def compute_cross_sectional_scores():
     # ── Step 1: Load raw data ────────────────────────────────
     print("  Loading daily_bars...", end=" ")
     prices_df = pd.read_sql_query(
-        "SELECT ticker, date, adj_close, volume FROM daily_bars ORDER BY ticker, date",
+        "SELECT ticker, date, close, adj_close, volume FROM daily_bars ORDER BY ticker, date",
         conn,
         parse_dates=["date"],
     )
@@ -98,9 +98,14 @@ def compute_cross_sectional_scores():
     # ── Step 3: Compute EV, EV/Sales (vectorized) ───────────
     print("  Computing Enterprise Value and EV/Sales...", end=" ")
 
-    # EV = (adj_close * shares_outstanding) + total_debt - cash_and_equivalents
+    # CRITICAL: Use unadjusted 'close' for market cap, NOT 'adj_close'.
+    # adj_close is split-adjusted backward (e.g. AAPL 2018 price / 4 for
+    # the 2020 split), but shares_outstanding from SEC filings is the raw
+    # historical count. Mixing the two produces wildly wrong market caps
+    # for any stock that has split.
+    # adj_close is still used for daily_return calculations in the backtest.
     merged["enterprise_value"] = (
-        (merged["adj_close"] * merged["shares_outstanding"])
+        (merged["close"] * merged["shares_outstanding"])
         + merged["total_debt"].fillna(0)
         - merged["cash_and_equivalents"].fillna(0)
     )
