@@ -41,6 +41,7 @@ pages = {
     "⚙️ Operations": [
         st.Page("pages/pipeline.py", title="Data Pipeline", icon="📥"),
         st.Page("pages/rebalancer.py", title="Portfolio Rebalancer", icon="⚖️"),
+        st.Page("pages/settings.py", title="Settings", icon="⚙️"),
     ],
     "🚀 Trading": [
         st.Page("pages/execution.py", title="Execution Desk", icon="🚀"),

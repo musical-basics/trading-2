@@ -1,5 +1,8 @@
 """
-shared.py — Shared helpers and sidebar configuration for all pages.
+shared.py — Shared helpers and sidebar for all pages.
+
+Configuration is handled by the Settings page (settings.py).
+Values are stored in st.session_state for cross-page persistence.
 """
 
 import sys
@@ -44,53 +47,64 @@ def get_table_count(table_name):
         return 0
 
 
-def render_sidebar():
-    """Render the shared sidebar configuration. Returns config dict."""
-    with st.sidebar:
-        st.markdown("## ⚙️ Configuration")
-        st.divider()
+# Default configuration values
+DEFAULTS = {
+    "universe": [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
+        "ORCL", "CRM", "AMD", "ADBE", "INTC", "CSCO", "QCOM",
+        "JPM", "V", "MA", "BAC", "WFC", "GS", "MS",
+        "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK", "TMO",
+        "WMT", "PG", "KO", "PEP", "COST", "MCD", "NKE", "HD",
+        "XOM", "CVX", "CAT", "BA", "UPS", "GE", "HON",
+        "DIS", "NFLX", "CMCSA", "T", "VZ",
+        "SPY", "QQQ",
+    ],
+    "fast_sma": 50,
+    "slow_sma": 200,
+    "rsi_period": 3,
+    "rsi_entry": 20,
+    "rsi_exit": 70,
+    "capital_per_trade": 1000.0,
+    "max_positions": 5,
+}
 
+
+def _init_defaults():
+    """Initialize session_state with defaults if not already set."""
+    for key, val in DEFAULTS.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+
+def get_config():
+    """Get the current config from session_state. Call _init_defaults() first."""
+    _init_defaults()
+    return {
+        "universe": st.session_state["universe"],
+        "fast_sma": st.session_state["fast_sma"],
+        "slow_sma": st.session_state["slow_sma"],
+        "rsi_period": st.session_state["rsi_period"],
+        "rsi_entry": st.session_state["rsi_entry"],
+        "rsi_exit": st.session_state["rsi_exit"],
+        "capital_per_trade": st.session_state["capital_per_trade"],
+        "max_positions": st.session_state["max_positions"],
+    }
+
+
+def render_sidebar():
+    """Render a slim sidebar with status info only. Returns config dict."""
+    _init_defaults()
+
+    with st.sidebar:
         api_key = os.getenv("ALPACA_API_KEY", "").strip()
         api_secret = os.getenv("ALPACA_SECRET_KEY", "").strip()
         if api_key and api_secret:
-            st.success("🟢 Alpaca API Keys Loaded")
+            st.success("🟢 Alpaca Connected")
         else:
-            st.warning("🟡 Dry-Run Mode")
+            st.info("📋 Dry-Run Mode")
 
-        st.divider()
+        # Quick status
+        n_tickers = len(st.session_state.get("universe", []))
+        st.caption(f"Universe: {n_tickers} tickers")
 
-        universe_input = st.text_area(
-            "Ticker Universe",
-            value="AAPL, MSFT, GOOGL, AMZN, TSLA, SPY, QQQ, GLD, META, NVDA",
-            height=68,
-        )
-        universe_list = [t.strip().upper() for t in universe_input.split(",") if t.strip()]
-        st.caption(f"{len(universe_list)} tickers")
-
-        st.divider()
-
-        st.markdown("**SMA Crossover**")
-        fast_sma = st.number_input("Fast SMA", min_value=5, max_value=100, value=50, step=5)
-        slow_sma = st.number_input("Slow SMA", min_value=50, max_value=500, value=200, step=10)
-
-        st.markdown("**Pullback (RSI)**")
-        rsi_period = st.number_input("RSI Period", min_value=2, max_value=14, value=3, step=1)
-        rsi_entry = st.number_input("RSI Entry", min_value=5, max_value=40, value=20, step=5)
-        rsi_exit = st.number_input("RSI Exit", min_value=50, max_value=90, value=70, step=5)
-
-        st.divider()
-
-        st.markdown("**Risk Limits**")
-        capital_per_trade = st.number_input("Capital/Trade ($)", min_value=100, max_value=10000, value=1000, step=100)
-        max_positions = st.number_input("Max Positions", min_value=1, max_value=20, value=5, step=1)
-
-    return {
-        "universe": universe_list,
-        "fast_sma": int(fast_sma),
-        "slow_sma": int(slow_sma),
-        "rsi_period": int(rsi_period),
-        "rsi_entry": int(rsi_entry),
-        "rsi_exit": int(rsi_exit),
-        "capital_per_trade": float(capital_per_trade),
-        "max_positions": int(max_positions),
-    }
+    return get_config()
