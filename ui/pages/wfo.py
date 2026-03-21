@@ -6,7 +6,7 @@ import numpy as np
 import importlib
 import plotly.graph_objects as go
 from ui.shared import get_db_connection, table_exists, render_sidebar
-from src.pipeline import wfo_multi
+from src.pipeline.backtesting import wfo_multi
 importlib.reload(wfo_multi)  # Force reload to pick up code changes
 
 cfg = render_sidebar()

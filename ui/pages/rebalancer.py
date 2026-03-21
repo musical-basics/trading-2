@@ -5,8 +5,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from ui.shared import get_db_connection, table_exists, render_sidebar
 from src.config import MAX_SINGLE_WEIGHT
-from src.pipeline import portfolio_rebalancer, execution
-from src.pipeline.portfolio_state import get_portfolio_state
+from src.pipeline.execution import portfolio_rebalancer
+from src.pipeline.execution import order_router as execution
+from src.pipeline.execution.portfolio_state import get_portfolio_state
 
 cfg = render_sidebar()
 
