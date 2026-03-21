@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from src.config import (
     DB_PATH, MAX_SINGLE_WEIGHT, CASH_BUFFER, ADV_LOOKBACK, ADV_MAX_PCT
 )
-from src.pipeline.portfolio_state import get_portfolio_state
+from src.pipeline.execution.portfolio_state import get_portfolio_state
 
 
 def rebalance_portfolio():

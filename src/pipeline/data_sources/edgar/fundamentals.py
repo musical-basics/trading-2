@@ -4,6 +4,11 @@ fundamental_ingestion_edgar.py — Quarterly Fundamental Ingestion via SEC EDGAR
 Uses the SEC EDGAR XBRL companyfacts API — truly free, no API key needed.
 Provides 10-20+ years of quarterly fundamentals (actual SEC filings).
 
+Fixes applied:
+  1. Uses actual SEC filing dates (e["filed"]) — no synthetic delays
+  2. Filters revenue by duration (~90 days) to avoid YTD contamination
+  3. Expanded revenue tags for banks/financials
+
 Same output schema as fundamental_ingestion.py — writes to quarterly_fundamentals table.
 """
 
@@ -11,24 +16,46 @@ import sqlite3
 import time
 import requests
 import pandas as pd
-from datetime import timedelta
-from src.config import DB_PATH, DEFAULT_UNIVERSE, FILING_DELAY_DAYS
+from datetime import datetime
+from src.config import DB_PATH, DEFAULT_UNIVERSE
 
 EDGAR_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
 EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 HEADERS = {"User-Agent": "TradingResearch research@example.com"}
 
 # XBRL tags vary across companies — try multiple fallbacks
+# Revenue for standard companies
 REVENUE_TAGS = [
     "RevenueFromContractWithCustomerExcludingAssessedTax",
     "Revenues",
     "SalesRevenueNet",
     "SalesRevenueGoodsNet",
     "RevenueFromContractWithCustomerIncludingAssessedTax",
+    # Banks and financials
+    "RevenuesNetOfInterestExpense",
+    "InterestIncomeExpenseNet",
+    "NoninterestIncome",
+    # Insurance
+    "PremiumsEarnedNet",
 ]
-DEBT_TAGS = ["LongTermDebt", "LongTermDebtNoncurrent", "DebtCurrent"]
-CASH_TAGS = ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"]
-SHARES_TAGS = ["CommonStockSharesOutstanding", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"]
+
+# Balance sheet items (instant concepts — no duration filtering needed)
+DEBT_TAGS = [
+    "LongTermDebt",
+    "LongTermDebtNoncurrent",
+    "LongTermDebtAndCapitalLeaseObligations",
+    "DebtCurrent",
+]
+CASH_TAGS = [
+    "CashAndCashEquivalentsAtCarryingValue",
+    "CashCashEquivalentsAndShortTermInvestments",
+    "Cash",
+]
+SHARES_TAGS = [
+    "CommonStockSharesOutstanding",
+    "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+    "EntityCommonStockSharesOutstanding",
+]
 
 
 def _get_cik_map():
@@ -42,21 +69,68 @@ def _get_cik_map():
     return cik_map
 
 
-def _extract_quarterly(facts, tags, unit_key="USD"):
-    """Extract quarterly 10-Q values from XBRL facts, trying multiple tags."""
+def _extract_quarterly_instant(facts, tags, unit_key="USD"):
+    """
+    Extract quarterly 10-Q values for INSTANT concepts (balance sheet items).
+    These don't have start dates — just a point-in-time snapshot.
+    Deduplicates by end date, keeping the most recently filed version.
+    Returns dict: end_date -> {val, filed, end, ...}
+    """
     gaap = facts.get("facts", {}).get("us-gaap", {})
     for tag in tags:
         concept = gaap.get(tag, {})
         units = concept.get("units", {})
         entries = units.get(unit_key, [])
-        # Filter to 10-Q filings only, deduplicate by end date
         quarterly = {}
         for e in entries:
             if e.get("form") == "10-Q" and e.get("end"):
                 end_date = e["end"]
-                # Keep the most recent filing for each period end
                 if end_date not in quarterly or e.get("filed", "") > quarterly[end_date].get("filed", ""):
                     quarterly[end_date] = e
+        if quarterly:
+            return quarterly
+    return {}
+
+
+def _extract_quarterly_duration(facts, tags, unit_key="USD"):
+    """
+    Extract quarterly 10-Q values for DURATION concepts (income statement items).
+
+    Critical: filters by duration to avoid YTD contamination.
+    A valid single-quarter entry has (end - start) ≈ 85-100 days.
+    YTD entries (180, 270 days) are excluded.
+
+    Deduplicates by end date, keeping the most recently filed version.
+    Returns dict: end_date -> {val, filed, start, end, ...}
+    """
+    gaap = facts.get("facts", {}).get("us-gaap", {})
+    for tag in tags:
+        concept = gaap.get(tag, {})
+        units = concept.get("units", {})
+        entries = units.get(unit_key, [])
+        quarterly = {}
+        for e in entries:
+            if e.get("form") != "10-Q" or not e.get("end"):
+                continue
+
+            # Duration filter: only keep single-quarter entries (~85-100 days)
+            start_str = e.get("start")
+            end_str = e["end"]
+            if start_str:
+                try:
+                    d_start = datetime.strptime(start_str, "%Y-%m-%d")
+                    d_end = datetime.strptime(end_str, "%Y-%m-%d")
+                    duration_days = (d_end - d_start).days
+                    # Skip YTD (6-month=~180d, 9-month=~270d)
+                    if duration_days > 120:
+                        continue
+                except ValueError:
+                    continue
+
+            end_date = end_str
+            if end_date not in quarterly or e.get("filed", "") > quarterly[end_date].get("filed", ""):
+                quarterly[end_date] = e
+
         if quarterly:
             return quarterly
     return {}
@@ -107,27 +181,44 @@ def ingest_fundamentals_edgar(tickers=None):
             resp.raise_for_status()
             facts = resp.json()
 
-            # Extract quarterly data for each field
-            revenue_q = _extract_quarterly(facts, REVENUE_TAGS, "USD")
-            debt_q = _extract_quarterly(facts, DEBT_TAGS, "USD")
-            cash_q = _extract_quarterly(facts, CASH_TAGS, "USD")
-            shares_q = _extract_quarterly(facts, SHARES_TAGS, "shares")
+            # Revenue is a DURATION concept — must filter by ~90 day periods
+            revenue_q = _extract_quarterly_duration(facts, REVENUE_TAGS, "USD")
 
-            # Merge all dates
-            all_dates = set(revenue_q.keys()) | set(debt_q.keys()) | set(cash_q.keys()) | set(shares_q.keys())
+            # Debt, cash, shares are INSTANT concepts — no duration filtering
+            debt_q = _extract_quarterly_instant(facts, DEBT_TAGS, "USD")
+            cash_q = _extract_quarterly_instant(facts, CASH_TAGS, "USD")
+            shares_q = _extract_quarterly_instant(facts, SHARES_TAGS, "shares")
+
             # Only keep dates that have at least revenue
             if revenue_q:
                 all_dates = set(revenue_q.keys())
             elif cash_q:
                 all_dates = set(cash_q.keys())
+            else:
+                all_dates = set(debt_q.keys()) | set(shares_q.keys())
 
             ticker_rows = 0
             for end_date in sorted(all_dates):
                 try:
                     period_end_date = pd.Timestamp(end_date)
-                    filing_date = period_end_date + timedelta(days=FILING_DELAY_DAYS)
 
-                    revenue = revenue_q.get(end_date, {}).get("val")
+                    # Use ACTUAL SEC filing date — no synthetic delay
+                    rev_entry = revenue_q.get(end_date, {})
+                    filed_str = rev_entry.get("filed")
+                    if not filed_str:
+                        # Fallback: check other fields for filing date
+                        filed_str = (
+                            debt_q.get(end_date, {}).get("filed")
+                            or cash_q.get(end_date, {}).get("filed")
+                            or shares_q.get(end_date, {}).get("filed")
+                        )
+                    if filed_str:
+                        filing_date = pd.Timestamp(filed_str)
+                    else:
+                        # Last resort: use period_end + 45 days
+                        filing_date = period_end_date + pd.Timedelta(days=45)
+
+                    revenue = rev_entry.get("val")
                     debt = debt_q.get(end_date, {}).get("val")
                     cash = cash_q.get(end_date, {}).get("val")
                     shares = shares_q.get(end_date, {}).get("val")
