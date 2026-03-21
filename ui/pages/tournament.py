@@ -1,10 +1,9 @@
-"""Strategy Tournament — Compare all 5 strategies over identical time periods."""
+"""Strategy Tournament — Compare all 5 strategies over identical trading days."""
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import timedelta
 from ui.shared import get_db_connection, table_exists, render_sidebar
 from src.config import SLIPPAGE_BPS, COMMISSION_PER_SHARE, MAX_SINGLE_WEIGHT, CASH_BUFFER
 from src.pipeline import strategy_tournament
@@ -12,7 +11,7 @@ from src.pipeline import strategy_tournament
 cfg = render_sidebar()
 
 st.markdown("# 🏆 Strategy Tournament")
-st.caption("Compare all strategies on equal footing — same time window, $10,000 starting capital")
+st.caption("Compare all strategies over the exact same trading days — $10,000 starting capital")
 st.divider()
 
 has_data = table_exists("daily_bars")
@@ -23,22 +22,49 @@ has_pb = table_exists("pullback_signals")
 if not has_data:
     st.info("ℹ️ No data yet. Run the pipeline first.")
 else:
+    # ── Get actual trading days from the database ────────────
+    conn = get_db_connection()
+    all_trading_dates = pd.read_sql_query(
+        "SELECT DISTINCT date FROM daily_bars WHERE ticker != 'SPY' ORDER BY date",
+        conn, parse_dates=["date"]
+    )["date"].tolist()
+    conn.close()
+
+    total_available = len(all_trading_dates)
+
     # ── Settings row ─────────────────────────────────────────
     col_period, col_long, col_short = st.columns([2, 1, 1])
     with col_period:
-        lookback_label = st.selectbox(
-            "📅 Evaluation Period",
-            ["90 Days", "180 Days", "365 Days", "All Available"],
-            index=1,
-            key="t_lookback",
+        period_label = st.selectbox(
+            "📅 Trading Period (trading days)",
+            [f"63 Days (~3 months)", f"126 Days (~6 months)", f"252 Days (~1 year)", f"All ({total_available} days)"],
+            index=2,
+            key="t_period",
         )
     with col_long:
         n_long = st.number_input("L/S: Long", min_value=1, max_value=10, value=2, step=1, key="t_n_long")
     with col_short:
         n_short = st.number_input("L/S: Short", min_value=1, max_value=10, value=2, step=1, key="t_n_short")
 
-    lookback_map = {"90 Days": 90, "180 Days": 180, "365 Days": 365, "All Available": None}
-    lookback_days = lookback_map[lookback_label]
+    # Parse trading days from label
+    period_map = {"63": 63, "126": 126, "252": 252, "All": None}
+    selected_days = None
+    for key in period_map:
+        if period_label.startswith(key):
+            selected_days = period_map[key]
+            break
+
+    # Determine the exact trading dates for evaluation
+    if selected_days and selected_days <= total_available:
+        eval_dates = set(all_trading_dates[-selected_days:])
+        eval_start = all_trading_dates[-selected_days]
+        eval_end = all_trading_dates[-1]
+        target_days = selected_days
+    else:
+        eval_dates = set(all_trading_dates)
+        eval_start = all_trading_dates[0]
+        eval_end = all_trading_dates[-1]
+        target_days = total_available
 
     if st.button("🏆 Run Tournament", type="primary", use_container_width=True):
         with st.spinner("Running all strategies..."):
@@ -80,45 +106,26 @@ else:
             results = strats
 
     if results:
-        # ── Trim all strategies to the same lookback window ──
-        # Find the common end date (latest date all strategies share)
-        end_dates = []
-        for name, (eq_df, _) in results.items():
-            eq_df = eq_df.copy()
-            eq_df["date"] = pd.to_datetime(eq_df["date"])
-            end_dates.append(eq_df["date"].max())
-        common_end = min(end_dates)
-
-        if lookback_days is not None:
-            cutoff_date = common_end - timedelta(days=lookback_days)
-        else:
-            cutoff_date = None
-
-        # Rebuild metrics for the common window
+        # ── Trim all strategies to the exact same trading dates ─
         trimmed_results = {}
         for name, (eq_df, _) in results.items():
             eq = eq_df.copy()
             eq["date"] = pd.to_datetime(eq["date"])
 
-            # Trim to window
-            if cutoff_date is not None:
-                eq_window = eq[eq["date"] >= cutoff_date].copy()
-            else:
-                eq_window = eq.copy()
+            # Filter to only the target trading dates
+            eq_window = eq[eq["date"].isin(eval_dates)].copy()
 
             if eq_window.empty or len(eq_window) < 2:
                 continue
 
-            # Rebase equity to start at $10,000 from the window start
-            eq_window = eq_window.reset_index(drop=True)
+            # Rebase equity to $10,000 from the window start
+            eq_window = eq_window.sort_values("date").reset_index(drop=True)
             eq_window["equity"] = 10000 * (1 + eq_window["daily_return"].fillna(0)).cumprod()
 
             actual_days = len(eq_window)
-            full_data = True
-            if lookback_days is not None and actual_days < lookback_days * 0.9:
-                full_data = False  # less than 90% of expected trading days
+            has_full_data = actual_days >= target_days * 0.95  # within 5% of target
 
-            # Recompute metrics
+            # Recompute metrics over this window
             dr = eq_window["daily_return"].fillna(0)
             sharpe = dr.mean() / dr.std() * np.sqrt(252) if dr.std() > 0 else 0
             running_max = eq_window["equity"].expanding().max()
@@ -133,15 +140,14 @@ else:
                 "max_drawdown": max_dd,
                 "cagr": cagr,
                 "days": actual_days,
-                "full_data": full_data,
+                "target_days": target_days,
+                "full_data": has_full_data,
             }
 
         # ── Metrics Table ────────────────────────────────────
         st.markdown("### 📊 Strategy Comparison")
-        if lookback_days:
-            st.caption(f"All strategies evaluated over the last **{lookback_days} calendar days** ending {common_end.strftime('%Y-%m-%d')}")
-        else:
-            st.caption("All strategies evaluated over their full available history")
+        st.caption(f"All strategies evaluated over **{target_days} trading days**: "
+                  f"{eval_start.strftime('%Y-%m-%d')} → {eval_end.strftime('%Y-%m-%d')}")
 
         rows = []
         for name, m in trimmed_results.items():
@@ -152,7 +158,7 @@ else:
                 "Sharpe": f"{m['sharpe']:.2f}",
                 "Max Drawdown": f"{m['max_drawdown']:.2%}",
                 "CAGR": f"{m['cagr']:.2%}",
-                "Days": m["days"],
+                "Trading Days": f"{m['days']}/{target_days}",
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -160,7 +166,8 @@ else:
         flagged = [n for n, m in trimmed_results.items() if not m["full_data"]]
         if flagged:
             st.warning(f"🚩 **Incomplete data:** {', '.join(flagged)} — "
-                      f"these strategies have fewer trading days than the selected {lookback_days}-day period expects.")
+                      f"missing trading days within the {target_days}-day window. "
+                      f"Their equity curves start later than other strategies.")
 
         # ── Winner Cards ─────────────────────────────────────
         best_return = max(trimmed_results, key=lambda x: trimmed_results[x]["total_return"])
@@ -189,7 +196,7 @@ else:
 
         fig = go.Figure()
 
-        # SPY benchmark (trimmed to same window)
+        # SPY benchmark (trimmed to same trading days)
         conn = get_db_connection()
         spy = pd.read_sql_query("""
             SELECT date, adj_close FROM daily_bars
@@ -198,8 +205,7 @@ else:
         conn.close()
 
         if not spy.empty:
-            if cutoff_date is not None:
-                spy = spy[spy["date"] >= cutoff_date]
+            spy = spy[spy["date"].isin(eval_dates)]
             spy["daily_return"] = spy["adj_close"].pct_change()
             spy["equity"] = 10000 * (1 + spy["daily_return"].fillna(0)).cumprod()
             fig.add_trace(go.Scatter(
@@ -212,7 +218,7 @@ else:
             eq = m["eq"]
             line_style = dict(color=colors.get(name, "#FFFFFF"), width=2.5)
             if not m["full_data"]:
-                line_style["dash"] = "dot"  # Dashed line for incomplete data
+                line_style["dash"] = "dot"
             fig.add_trace(go.Scatter(
                 x=eq["date"], y=eq["equity"],
                 name=name + (" 🚩" if not m["full_data"] else ""),
