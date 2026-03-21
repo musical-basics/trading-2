@@ -36,10 +36,11 @@ pages = {
         st.Page("pages/charts.py", title="Charts & Simulation", icon="📊"),
         st.Page("pages/strategy_comparison.py", title="Strategy Comparison", icon="⚔️"),
         st.Page("pages/xs_scores.py", title="Cross-Sectional Scores", icon="🧬"),
+        st.Page("pages/tournament.py", title="Strategy Tournament", icon="🏆"),
+        st.Page("pages/wfo.py", title="WFO Backtester", icon="🔬"),
     ],
     "⚙️ Operations": [
         st.Page("pages/pipeline.py", title="Data Pipeline", icon="📥"),
-        st.Page("pages/wfo.py", title="WFO Tournament", icon="🏆"),
         st.Page("pages/rebalancer.py", title="Portfolio Rebalancer", icon="⚖️"),
     ],
     "🚀 Trading": [
