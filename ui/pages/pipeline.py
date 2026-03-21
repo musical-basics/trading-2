@@ -4,11 +4,12 @@ import streamlit as st
 import pandas as pd
 import os
 from ui.shared import get_db_connection, table_exists, get_table_count, render_sidebar, DB_PATH
-from src.pipeline import (
-    db_init, data_ingestion, fundamental_ingestion,
-    fundamental_ingestion_fmp, fundamental_ingestion_edgar,
-    cross_sectional_scoring,
-)
+from src.pipeline import db_init, data_ingestion, fundamental_ingestion, cross_sectional_scoring
+from src.pipeline.data_sources.fmp import fundamentals as fmp_fundamentals
+from src.pipeline.data_sources.edgar import fundamentals as edgar_fundamentals
+from src.pipeline.data_sources.tiingo import fundamentals as tiingo_fundamentals
+from src.pipeline.data_sources.polygon import fundamentals as polygon_fundamentals
+from src.pipeline.data_sources.eodhd import fundamentals as eodhd_fundamentals
 from src.strategies import strategy, pullback_strategy
 
 cfg = render_sidebar()
@@ -17,22 +18,38 @@ st.markdown("# ⚙️ Data Pipeline")
 st.divider()
 
 # ── Fundamental Data Source Selector ─────────────────────────
+DATA_SOURCES = {
+    "SEC EDGAR  — free, 6+ years, no key needed": "edgar",
+    "yfinance   — free, ~8 quarters (default)": "yfinance",
+    "FMP        — free: 5 quarters, paid: 10+ years": "fmp",
+    "Tiingo     — free: 3 years (Dow 30), paid: 20+ years": "tiingo",
+    "Polygon.io — free: 5 calls/min, paid: 10+ years": "polygon",
+    "EODHD      — free: 20 calls/day, paid: unlimited": "eodhd",
+}
+
 fund_source = st.selectbox(
     "📊 Fundamental Data Source",
-    ["SEC EDGAR (free, 6+ years, no key)",
-     "FMP (free tier: 5 quarters, needs key)",
-     "yfinance (default, ~8 quarters)"],
+    list(DATA_SOURCES.keys()),
     index=0,
     key="fund_source",
 )
+source_key = DATA_SOURCES[fund_source]
+
 
 def _run_fundamentals(tickers):
-    if fund_source.startswith("SEC"):
-        fundamental_ingestion_edgar.ingest_fundamentals_edgar(tickers=tickers)
-    elif fund_source.startswith("FMP"):
-        fundamental_ingestion_fmp.ingest_fundamentals_fmp(tickers=tickers)
+    if source_key == "edgar":
+        edgar_fundamentals.ingest_fundamentals_edgar(tickers=tickers)
+    elif source_key == "fmp":
+        fmp_fundamentals.ingest_fundamentals_fmp(tickers=tickers)
+    elif source_key == "tiingo":
+        tiingo_fundamentals.ingest_fundamentals_tiingo(tickers=tickers)
+    elif source_key == "polygon":
+        polygon_fundamentals.ingest_fundamentals_polygon(tickers=tickers)
+    elif source_key == "eodhd":
+        eodhd_fundamentals.ingest_fundamentals_eodhd(tickers=tickers)
     else:
         fundamental_ingestion.ingest_fundamentals(tickers=tickers)
+
 
 # ── Primary Action ───────────────────────────────────────────
 if st.button("🚀 Run Full Pipeline", type="primary", use_container_width=True):
@@ -43,7 +60,7 @@ if st.button("🚀 Run Full Pipeline", type="primary", use_container_width=True)
     data_ingestion.UNIVERSE = cfg["universe"]
     data_ingestion.ingest()
 
-    progress.progress(35, text=f"Ingesting quarterly fundamentals ({fund_source.split(' ')[0]})...")
+    progress.progress(35, text=f"Ingesting quarterly fundamentals ({source_key})...")
     _run_fundamentals(cfg["universe"])
 
     progress.progress(55, text="Computing cross-sectional EV/Sales Z-scores...")

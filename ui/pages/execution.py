@@ -6,9 +6,10 @@ from datetime import datetime
 from ui.shared import get_db_connection, table_exists, render_sidebar
 from src.pipeline import (
     db_init, data_ingestion, fundamental_ingestion,
-    fundamental_ingestion_fmp, cross_sectional_scoring, wfo_backtester,
+    cross_sectional_scoring, wfo_backtester,
     portfolio_rebalancer, simulation, execution,
 )
+from src.pipeline.data_sources.edgar import fundamentals as edgar_fundamentals
 
 cfg = render_sidebar()
 
@@ -94,7 +95,7 @@ with col_e2:
             db_init.init_db()
             data_ingestion.UNIVERSE = cfg["universe"]
             data_ingestion.ingest()
-            fundamental_ingestion_fmp.ingest_fundamentals_fmp(tickers=cfg["universe"])
+            edgar_fundamentals.ingest_fundamentals_edgar(tickers=cfg["universe"])
             cross_sectional_scoring.compute_cross_sectional_scores()
             wfo_backtester.run_wfo_tournament()
             orders = portfolio_rebalancer.rebalance_portfolio()
