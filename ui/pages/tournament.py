@@ -32,21 +32,31 @@ else:
 
     total_available = len(all_trading_dates)
 
-    # ── Settings row ─────────────────────────────────────────
-    col_period, col_long, col_short = st.columns([2, 1, 1])
-    with col_period:
+    # ── Settings ────────────────────────────────────────────
+    row1_c1, row1_c2 = st.columns(2)
+    with row1_c1:
         period_label = st.selectbox(
-            "📅 Trading Period (trading days)",
-            [f"63 Days (~3 months)", f"126 Days (~6 months)", f"252 Days (~1 year)", f"All ({total_available} days)"],
+            "📅 Trading Period (measurement window)",
+            ["63 Days (~3 months)", "126 Days (~6 months)", "252 Days (~1 year)", f"All ({total_available} days)"],
             index=2,
             key="t_period",
         )
-    with col_long:
+    with row1_c2:
+        lookback_label = st.selectbox(
+            "🔍 Lookback Period (indicator warm-up)",
+            ["200 Days (SMA-200)", "400 Days", "600 Days"],
+            index=0,
+            key="t_lookback",
+            help="Extra data before the trading period for indicator warm-up (SMA, RSI, Z-scores, etc.)",
+        )
+
+    row2_c1, row2_c2 = st.columns(2)
+    with row2_c1:
         n_long = st.number_input("L/S: Long", min_value=1, max_value=10, value=2, step=1, key="t_n_long")
-    with col_short:
+    with row2_c2:
         n_short = st.number_input("L/S: Short", min_value=1, max_value=10, value=2, step=1, key="t_n_short")
 
-    # Parse trading days from label
+    # Parse settings
     period_map = {"63": 63, "126": 126, "252": 252, "All": None}
     selected_days = None
     for key in period_map:
@@ -54,7 +64,9 @@ else:
             selected_days = period_map[key]
             break
 
-    # Determine the exact trading dates for evaluation
+    lookback_days = int(lookback_label.split(" ")[0])
+
+    # Determine the exact trading dates for the TRADING window
     if selected_days and selected_days <= total_available:
         eval_dates = set(all_trading_dates[-selected_days:])
         eval_start = all_trading_dates[-selected_days]
@@ -65,6 +77,17 @@ else:
         eval_start = all_trading_dates[0]
         eval_end = all_trading_dates[-1]
         target_days = total_available
+
+    # Show data requirements
+    total_needed = target_days + lookback_days
+    data_sufficient = total_available >= total_needed
+    if data_sufficient:
+        st.caption(f"✅ Data requirement: **{target_days}** trading + **{lookback_days}** lookback = "
+                  f"**{total_needed}** days needed — you have **{total_available}** available")
+    else:
+        st.warning(f"⚠️ Data requirement: **{target_days}** trading + **{lookback_days}** lookback = "
+                  f"**{total_needed}** days needed — but you only have **{total_available}**. "
+                  f"Some strategies may not have fully warmed-up indicators.")
 
     if st.button("🏆 Run Tournament", type="primary", use_container_width=True):
         with st.spinner("Running all strategies..."):
