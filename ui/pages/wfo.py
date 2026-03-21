@@ -36,8 +36,15 @@ else:
         """)
 
     if st.button("🔬 Run Walk-Forward Optimization", type="primary", use_container_width=True):
-        with st.spinner("Running WFO for all strategies (this may take a minute)..."):
-            results = wfo_multi.run_all_wfo()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        def _update_progress(name, step, total):
+            progress_bar.progress(step / total, text=f"⏳ {name}...")
+            status_text.caption(f"Step {step}/{total}: {name}")
+
+        results = wfo_multi.run_all_wfo(progress_callback=_update_progress)
+        progress_bar.progress(1.0, text="✅ Complete!")
         st.session_state["wfo_results"] = results
         st.success(f"✅ WFO complete — {len(results)} strategies optimized!")
         st.rerun()
@@ -45,9 +52,16 @@ else:
     results = st.session_state.get("wfo_results")
 
     if results is None:
-        # Run on-the-fly
-        with st.spinner("Computing WFO results..."):
-            results = wfo_multi.run_all_wfo()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        def _update(name, step, total):
+            progress_bar.progress(step / total, text=f"⏳ {name}...")
+            status_text.caption(f"Step {step}/{total}: {name}")
+
+        results = wfo_multi.run_all_wfo(progress_callback=_update)
+        progress_bar.empty()
+        status_text.empty()
         if results:
             st.session_state["wfo_results"] = results
 

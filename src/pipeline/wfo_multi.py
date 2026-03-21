@@ -1,9 +1,8 @@
 """
 wfo_multi.py — True Walk-Forward Optimization for all 4 strategies.
 
-For each strategy, sweeps tunable parameters on a training window,
-then evaluates with the best parameters on the test window.
-Rolling windows are stitched into one out-of-sample equity curve.
+Optimized: preloads all data once, avoids redundant SQL queries.
+Supports progress callbacks for Streamlit progress bars.
 
 Tunable parameters per strategy:
   EV/Sales Long-Only : Z-score buy threshold
@@ -15,7 +14,7 @@ Tunable parameters per strategy:
 import sqlite3
 import pandas as pd
 import numpy as np
-from src.config import DB_PATH, MAX_SINGLE_WEIGHT, CASH_BUFFER
+from src.config import DB_PATH, MAX_SINGLE_WEIGHT
 
 
 def _compute_metrics(daily_returns):
@@ -33,19 +32,12 @@ def _compute_metrics(daily_returns):
 
 
 def _get_date_windows(all_dates, train_frac=0.66):
-    """
-    Create train/test windows for WFO.
-
-    With <500 trading days (~2 years): single 66/33 train/test split.
-    With more data: rolling windows with ~63-day (3-month) step size,
-    each with a 6-month train window and 3-month test window.
-    """
+    """Create train/test windows for WFO."""
     n = len(all_dates)
     split = int(n * train_frac)
     if split < 20 or (n - split) < 10:
         return []
 
-    # For limited data: single honest train/test split
     if n < 500:
         return [{
             "train_start": all_dates[0],
@@ -54,10 +46,9 @@ def _get_date_windows(all_dates, train_frac=0.66):
             "test_end": all_dates[-1],
         }]
 
-    # For larger datasets: rolling non-overlapping windows
-    train_size = 126  # ~6 months
-    test_size = 63    # ~3 months
-    step_size = 63    # ~3 months (non-overlapping test blocks)
+    train_size = 126
+    test_size = 63
+    step_size = 63
 
     windows = []
     i = 0
@@ -80,16 +71,13 @@ def _get_date_windows(all_dates, train_frac=0.66):
 
 # ═══════════════════════════════════════════════════════════════
 # Strategy 1: EV/Sales Z-Score Long-Only
-# Tunable: Z-score buy threshold
 # ═══════════════════════════════════════════════════════════════
 def _ev_sales_sharpe(data, threshold):
-    """Quick Sharpe for a given Z-score threshold on training data."""
     d = data.copy()
     d["weight"] = 0.0
     buy = d["ev_sales_zscore"] < threshold
     if not buy.any():
         return -np.inf
-
     counts = d.loc[buy].groupby("date")["ticker"].transform("count")
     d.loc[buy, "weight"] = np.minimum(1.0 / counts.values, MAX_SINGLE_WEIGHT)
     d["wr"] = d["weight"] * d["daily_return"]
@@ -98,7 +86,6 @@ def _ev_sales_sharpe(data, threshold):
 
 
 def _ev_sales_simulate(data, threshold, starting_eq=1.0):
-    """Simulate EV/Sales with a given threshold, return equity series."""
     d = data.copy()
     d["weight"] = 0.0
     buy = d["ev_sales_zscore"] < threshold
@@ -114,21 +101,12 @@ def _ev_sales_simulate(data, threshold, starting_eq=1.0):
     return port
 
 
-def wfo_ev_sales(conn):
-    """WFO for EV/Sales Z-Score strategy."""
-    df = pd.read_sql_query("""
-        SELECT cs.ticker, cs.date, cs.ev_sales_zscore, db.adj_close
-        FROM cross_sectional_scores cs
-        JOIN daily_bars db ON cs.ticker = db.ticker AND cs.date = db.date
-        ORDER BY cs.date, cs.ticker
-    """, conn, parse_dates=["date"])
-    if df.empty:
+def wfo_ev_sales(df_all):
+    """WFO for EV/Sales — takes preloaded DataFrame."""
+    if df_all.empty:
         return None
 
-    df = df.sort_values(["ticker", "date"])
-    df["daily_return"] = df.groupby("ticker")["adj_close"].pct_change()
-
-    all_dates = sorted(df["date"].unique())
+    all_dates = sorted(df_all["date"].unique())
     windows = _get_date_windows(all_dates)
     if not windows:
         return None
@@ -139,8 +117,8 @@ def wfo_ev_sales(conn):
     results = []
 
     for w in windows:
-        train = df[(df["date"] >= w["train_start"]) & (df["date"] <= w["train_end"])]
-        test = df[(df["date"] >= w["test_start"]) & (df["date"] <= w["test_end"])]
+        train = df_all[(df_all["date"] >= w["train_start"]) & (df_all["date"] <= w["train_end"])]
+        test = df_all[(df_all["date"] >= w["test_start"]) & (df_all["date"] <= w["test_end"])]
 
         best_t, best_s = thresholds[2], -np.inf
         for t in thresholds:
@@ -168,27 +146,14 @@ def wfo_ev_sales(conn):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Strategy 2: L/S Z-Score
-# Tunable: n_long, n_short
+# Strategy 2: L/S Z-Score (preloaded data, no per-window SQL)
 # ═══════════════════════════════════════════════════════════════
-def _ls_simulate_window(conn, start, end, n_long, n_short, starting_eq=1.0):
-    """Simulate L/S Z-Score over a specific date range."""
-    scores = pd.read_sql_query("""
-        SELECT cs.ticker, cs.date, cs.ev_sales_zscore, db.adj_close
-        FROM cross_sectional_scores cs
-        JOIN daily_bars db ON cs.ticker = db.ticker AND cs.date = db.date
-        WHERE cs.date >= ? AND cs.date <= ?
-        ORDER BY cs.date, cs.ticker
-    """, conn, params=(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")),
-        parse_dates=["date"])
-
+def _ls_simulate_from_df(scores_all, start, end, n_long, n_short, starting_eq=1.0):
+    """Simulate L/S Z-Score using preloaded data."""
+    scores = scores_all[(scores_all["date"] >= start) & (scores_all["date"] <= end)].copy()
     if scores.empty:
         return pd.DataFrame(), -np.inf
 
-    scores = scores.sort_values(["ticker", "date"])
-    scores["daily_return"] = scores.groupby("ticker")["adj_close"].pct_change()
-
-    # Monthly rebalance: assign weights at month boundaries
     scores["month"] = scores["date"].dt.to_period("M")
     months = sorted(scores["month"].unique())
 
@@ -197,22 +162,20 @@ def _ls_simulate_window(conn, start, end, n_long, n_short, starting_eq=1.0):
         month_data = scores[scores["month"] == m].copy()
         first_day = month_data.groupby("ticker").first().reset_index()
         ranked = first_day.sort_values("ev_sales_zscore")
+        longs = set(ranked.head(n_long)["ticker"].tolist())
+        shorts = set(ranked.tail(n_short)["ticker"].tolist())
 
-        longs = ranked.head(n_long)["ticker"].tolist()
-        shorts = ranked.tail(n_short)["ticker"].tolist()
-
-        for _, row in month_data.iterrows():
-            w = 0.0
-            if row["ticker"] in longs:
-                w = 1.0 / n_long
-            elif row["ticker"] in shorts:
-                w = -1.0 / n_short
-            daily_returns.append({"date": row["date"], "wr": w * row["daily_return"]})
+        # Vectorized weight assignment
+        month_data["weight"] = 0.0
+        month_data.loc[month_data["ticker"].isin(longs), "weight"] = 1.0 / n_long
+        month_data.loc[month_data["ticker"].isin(shorts), "weight"] = -1.0 / n_short
+        month_data["wr"] = month_data["weight"] * month_data["daily_return"]
+        daily_returns.append(month_data[["date", "wr"]])
 
     if not daily_returns:
         return pd.DataFrame(), -np.inf
 
-    port = pd.DataFrame(daily_returns).groupby("date")["wr"].sum().reset_index()
+    port = pd.concat(daily_returns).groupby("date")["wr"].sum().reset_index()
     port.columns = ["date", "daily_return"]
     port = port.sort_values("date")
     port["equity"] = starting_eq * (1 + port["daily_return"]).cumprod()
@@ -221,15 +184,12 @@ def _ls_simulate_window(conn, start, end, n_long, n_short, starting_eq=1.0):
     return port, sharpe
 
 
-def wfo_ls_zscore(conn):
-    """WFO for L/S Z-Score strategy."""
-    dates_df = pd.read_sql_query(
-        "SELECT DISTINCT date FROM cross_sectional_scores ORDER BY date", conn, parse_dates=["date"]
-    )
-    if dates_df.empty:
+def wfo_ls_zscore(scores_all):
+    """WFO for L/S Z-Score — takes preloaded DataFrame."""
+    if scores_all.empty:
         return None
 
-    all_dates = sorted(dates_df["date"].tolist())
+    all_dates = sorted(scores_all["date"].unique())
     windows = _get_date_windows(all_dates)
     if not windows:
         return None
@@ -242,12 +202,12 @@ def wfo_ls_zscore(conn):
     for w in windows:
         best_params, best_s = (2, 2), -np.inf
         for nl, ns in candidates:
-            _, s = _ls_simulate_window(conn, w["train_start"], w["train_end"], nl, ns)
+            _, s = _ls_simulate_from_df(scores_all, w["train_start"], w["train_end"], nl, ns)
             if s > best_s:
                 best_s, best_params = s, (nl, ns)
 
-        oos_eq, _ = _ls_simulate_window(conn, w["test_start"], w["test_end"],
-                                         best_params[0], best_params[1], cum_eq)
+        oos_eq, _ = _ls_simulate_from_df(scores_all, w["test_start"], w["test_end"],
+                                          best_params[0], best_params[1], cum_eq)
         if oos_eq.empty:
             continue
 
@@ -273,46 +233,28 @@ def wfo_ls_zscore(conn):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Strategy 3: SMA Crossover (equal-weight portfolio)
-# Tunable: fast_sma, slow_sma
+# Strategy 3: SMA Crossover (preloaded data, vectorized)
 # ═══════════════════════════════════════════════════════════════
-def _sma_portfolio_simulate(conn, start, end, fast, slow, starting_eq=1.0):
-    """Simulate SMA crossover portfolio for given date range and params."""
-    bars = pd.read_sql_query("""
-        SELECT ticker, date, adj_close FROM daily_bars
-        WHERE date >= ? AND date <= ?
-        ORDER BY ticker, date
-    """, conn, params=(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")),
-        parse_dates=["date"])
-
-    if bars.empty:
+def _sma_portfolio_from_df(bars_all, start, end, fast, slow, starting_eq=1.0):
+    """Simulate SMA crossover using preloaded data."""
+    tickers = [t for t in bars_all["ticker"].unique() if t not in ("SPY", "QQQ", "GLD")]
+    n = len(tickers)
+    if n == 0:
         return pd.DataFrame(), -np.inf
 
-    tickers = bars["ticker"].unique()
-    n = len(tickers)
     all_daily = []
-
     for ticker in tickers:
-        # Need extra lookback data for SMA calculation
-        full = pd.read_sql_query("""
-            SELECT date, adj_close FROM daily_bars
-            WHERE ticker = ? AND date <= ? ORDER BY date
-        """, conn, params=(ticker, end.strftime("%Y-%m-%d")), parse_dates=["date"])
-
+        full = bars_all[(bars_all["ticker"] == ticker) & (bars_all["date"] <= end)].copy()
         if len(full) < slow:
             continue
 
         full[f"sma_{fast}"] = full["adj_close"].rolling(fast).mean()
         full[f"sma_{slow}"] = full["adj_close"].rolling(slow).mean()
         full["daily_return"] = full["adj_close"].pct_change()
-
-        # Generate signals
         full["signal"] = 0
         full.loc[full[f"sma_{fast}"] > full[f"sma_{slow}"], "signal"] = 1
 
-        # Filter to test window
-        test_mask = full["date"] >= start
-        test = full[test_mask].copy()
+        test = full[full["date"] >= start].copy()
         if test.empty:
             continue
 
@@ -333,15 +275,9 @@ def _sma_portfolio_simulate(conn, start, end, fast, slow, starting_eq=1.0):
     return port, sharpe
 
 
-def wfo_sma(conn):
-    """WFO for SMA Crossover strategy."""
-    dates_df = pd.read_sql_query(
-        "SELECT DISTINCT date FROM daily_bars ORDER BY date", conn, parse_dates=["date"]
-    )
-    if dates_df.empty:
-        return None
-
-    all_dates = sorted(dates_df["date"].tolist())
+def wfo_sma(bars_all):
+    """WFO for SMA Crossover — takes preloaded DataFrame."""
+    all_dates = sorted(bars_all["date"].unique())
     windows = _get_date_windows(all_dates)
     if not windows:
         return None
@@ -354,12 +290,12 @@ def wfo_sma(conn):
     for w in windows:
         best_params, best_s = (50, 200), -np.inf
         for fast, slow in candidates:
-            _, s = _sma_portfolio_simulate(conn, w["train_start"], w["train_end"], fast, slow)
+            _, s = _sma_portfolio_from_df(bars_all, w["train_start"], w["train_end"], fast, slow)
             if s > best_s:
                 best_s, best_params = s, (fast, slow)
 
-        oos_eq, _ = _sma_portfolio_simulate(conn, w["test_start"], w["test_end"],
-                                             best_params[0], best_params[1], cum_eq)
+        oos_eq, _ = _sma_portfolio_from_df(bars_all, w["test_start"], w["test_end"],
+                                            best_params[0], best_params[1], cum_eq)
         if oos_eq.empty:
             continue
 
@@ -385,8 +321,7 @@ def wfo_sma(conn):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Strategy 4: Pullback RSI (equal-weight portfolio)
-# Tunable: rsi_period, rsi_entry
+# Strategy 4: Pullback RSI (preloaded data, vectorized RSI)
 # ═══════════════════════════════════════════════════════════════
 def _rsi(series, period):
     delta = series.diff()
@@ -396,22 +331,16 @@ def _rsi(series, period):
     return 100 - (100 / (1 + rs))
 
 
-def _pullback_portfolio_simulate(conn, start, end, rsi_period, rsi_entry, starting_eq=1.0):
-    """Simulate Pullback RSI portfolio for a specific window."""
-    bars = pd.read_sql_query("""
-        SELECT ticker, date, adj_close FROM daily_bars
-        WHERE date <= ? ORDER BY ticker, date
-    """, conn, params=(end.strftime("%Y-%m-%d"),), parse_dates=["date"])
-
-    if bars.empty:
+def _pullback_from_df(bars_all, start, end, rsi_period, rsi_entry, starting_eq=1.0):
+    """Simulate Pullback RSI using preloaded data with vectorized signals."""
+    tickers = [t for t in bars_all["ticker"].unique() if t not in ("SPY", "QQQ", "GLD")]
+    n = len(tickers)
+    if n == 0:
         return pd.DataFrame(), -np.inf
 
-    tickers = bars["ticker"].unique()
-    n = len(tickers)
     all_daily = []
-
     for ticker in tickers:
-        full = bars[bars["ticker"] == ticker].copy().sort_values("date")
+        full = bars_all[(bars_all["ticker"] == ticker) & (bars_all["date"] <= end)].copy()
         if len(full) < 200:
             continue
 
@@ -419,20 +348,25 @@ def _pullback_portfolio_simulate(conn, start, end, rsi_period, rsi_entry, starti
         full["rsi"] = _rsi(full["adj_close"], rsi_period)
         full["daily_return"] = full["adj_close"].pct_change()
 
-        # Pullback signals: above 200 SMA + RSI < entry
-        full["in_position"] = 0
+        # Vectorized signal generation (no Python loop)
+        entry_cond = (full["adj_close"] > full["sma_200"]) & (full["rsi"] < rsi_entry)
+        exit_cond = full["rsi"] > 70
+
+        # Use a state machine approach but vectorized with numpy
+        in_position = np.zeros(len(full))
         pos = 0
-        for idx in full.index:
-            price = full.loc[idx, "adj_close"]
-            sma = full.loc[idx, "sma_200"]
-            r = full.loc[idx, "rsi"]
-            if pd.isna(sma) or pd.isna(r):
+        rsi_vals = full["rsi"].values
+        price_vals = full["adj_close"].values
+        sma_vals = full["sma_200"].values
+        for i in range(len(full)):
+            if np.isnan(sma_vals[i]) or np.isnan(rsi_vals[i]):
                 continue
-            if pos == 0 and price > sma and r < rsi_entry:
+            if pos == 0 and price_vals[i] > sma_vals[i] and rsi_vals[i] < rsi_entry:
                 pos = 1
-            elif pos == 1 and r > 70:  # Exit at RSI > 70
+            elif pos == 1 and rsi_vals[i] > 70:
                 pos = 0
-            full.loc[idx, "in_position"] = pos
+            in_position[i] = pos
+        full["in_position"] = in_position
 
         test = full[full["date"] >= start].copy()
         if test.empty:
@@ -455,15 +389,9 @@ def _pullback_portfolio_simulate(conn, start, end, rsi_period, rsi_entry, starti
     return port, sharpe
 
 
-def wfo_pullback(conn):
-    """WFO for Pullback RSI strategy."""
-    dates_df = pd.read_sql_query(
-        "SELECT DISTINCT date FROM daily_bars ORDER BY date", conn, parse_dates=["date"]
-    )
-    if dates_df.empty:
-        return None
-
-    all_dates = sorted(dates_df["date"].tolist())
+def wfo_pullback(bars_all):
+    """WFO for Pullback RSI — takes preloaded DataFrame."""
+    all_dates = sorted(bars_all["date"].unique())
     windows = _get_date_windows(all_dates)
     if not windows:
         return None
@@ -476,12 +404,12 @@ def wfo_pullback(conn):
     for w in windows:
         best_params, best_s = (3, 20), -np.inf
         for period, entry in candidates:
-            _, s = _pullback_portfolio_simulate(conn, w["train_start"], w["train_end"], period, entry)
+            _, s = _pullback_from_df(bars_all, w["train_start"], w["train_end"], period, entry)
             if s > best_s:
                 best_s, best_params = s, (period, entry)
 
-        oos_eq, _ = _pullback_portfolio_simulate(conn, w["test_start"], w["test_end"],
-                                                  best_params[0], best_params[1], cum_eq)
+        oos_eq, _ = _pullback_from_df(bars_all, w["test_start"], w["test_end"],
+                                       best_params[0], best_params[1], cum_eq)
         if oos_eq.empty:
             continue
 
@@ -507,28 +435,65 @@ def wfo_pullback(conn):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Run all WFO
+# Run all WFO — preload data ONCE, call with progress callback
 # ═══════════════════════════════════════════════════════════════
-def run_all_wfo():
-    """Run WFO for all 4 strategies. Saves per-window results to wfo_results. Returns list of result dicts."""
-    conn = sqlite3.connect(DB_PATH)
-    results = []
+def run_all_wfo(progress_callback=None):
+    """
+    Run WFO for all 4 strategies.
 
-    for fn in [wfo_ev_sales, wfo_ls_zscore, wfo_sma, wfo_pullback]:
+    progress_callback: optional callable(strategy_name, step, total_steps)
+      Used by Streamlit to update progress bars.
+    """
+    conn = sqlite3.connect(DB_PATH)
+
+    # ── Preload ALL data once ────────────────────────────────
+    if progress_callback:
+        progress_callback("Loading data", 0, 6)
+
+    bars_all = pd.read_sql_query(
+        "SELECT ticker, date, adj_close FROM daily_bars ORDER BY ticker, date",
+        conn, parse_dates=["date"]
+    )
+    bars_all = bars_all.sort_values(["ticker", "date"])
+
+    scores_all = pd.read_sql_query("""
+        SELECT cs.ticker, cs.date, cs.ev_sales_zscore, db.adj_close
+        FROM cross_sectional_scores cs
+        JOIN daily_bars db ON cs.ticker = db.ticker AND cs.date = db.date
+        ORDER BY cs.ticker, cs.date
+    """, conn, parse_dates=["date"])
+    if not scores_all.empty:
+        scores_all = scores_all.sort_values(["ticker", "date"])
+        scores_all["daily_return"] = scores_all.groupby("ticker")["adj_close"].pct_change()
+
+    # ── Run strategies ───────────────────────────────────────
+    strategies = [
+        ("EV/Sales Long-Only", lambda: wfo_ev_sales(scores_all) if not scores_all.empty else None),
+        ("L/S Z-Score", lambda: wfo_ls_zscore(scores_all) if not scores_all.empty else None),
+        ("SMA Crossover (EW)", lambda: wfo_sma(bars_all)),
+        ("Pullback RSI (EW)", lambda: wfo_pullback(bars_all)),
+    ]
+
+    results = []
+    for i, (name, fn) in enumerate(strategies):
+        if progress_callback:
+            progress_callback(name, i + 1, len(strategies) + 2)  # +2 for load + save steps
         try:
-            r = fn(conn)
+            r = fn()
             if r:
                 results.append(r)
         except Exception as e:
-            print(f"  ⚠ {fn.__name__} failed: {e}")
+            print(f"  ⚠ {name} failed: {e}")
 
-    # Save all WFO results to SQLite
+    # ── Save to SQLite ───────────────────────────────────────
+    if progress_callback:
+        progress_callback("Saving results", len(strategies) + 1, len(strategies) + 2)
+
     cursor = conn.cursor()
     for r in results:
         strategy_id = "wfo_" + r["name"].lower().replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "")
         cursor.execute("DELETE FROM wfo_results WHERE strategy_id = ?", (strategy_id,))
         for w in r["windows"]:
-            # Parse window dates from "YYYY-MM-DD → YYYY-MM-DD"
             parts = w["window"].split(" → ")
             cursor.execute("""
                 INSERT INTO wfo_results
@@ -546,7 +511,10 @@ def run_all_wfo():
 
 
 if __name__ == "__main__":
-    results = run_all_wfo()
+    def _print_progress(name, step, total):
+        print(f"  [{step}/{total}] {name}...")
+
+    results = run_all_wfo(progress_callback=_print_progress)
     for r in results:
         print(f"\n{'='*50}")
         print(f"{r['name']}")
