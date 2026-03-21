@@ -1,12 +1,14 @@
 """
-ls_zscore_strategy.py — Long/Short Monthly EV/Sales Z-Score Strategy
+ls_zscore_strategy.py — Long/Short EV/Sales Z-Score Strategy
 
 Strategy rules:
-  1. At the start of each month, rank the universe by EV/Sales Z-score
+  1. At the start of each rebalance period, rank the universe by EV/Sales Z-score
   2. LONG the N lowest Z-score stocks (cheapest relative to peers)
   3. SHORT the N highest Z-score stocks (most expensive relative to peers)
-  4. Hold for 1 month, then close all positions and re-rank
+  4. Hold for the rebalance period, then close all positions and re-rank
   5. Equal weight within each leg
+
+Rebalance frequencies: Weekly, Biweekly, Monthly (default), Quarterly.
 
 This is a dollar-neutral long/short equity strategy — portfolio return
 comes from the spread between cheap and expensive stocks, not market direction.
@@ -18,19 +20,40 @@ import numpy as np
 from src.config import DB_PATH, SLIPPAGE_BPS
 
 
-def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000):
+# Supported rebalance frequencies
+REBALANCE_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly"]
+
+
+def _assign_rebalance_period(dates, freq="Monthly"):
+    """Assign a rebalance period label to each date."""
+    if freq == "Monthly":
+        return dates.dt.to_period("M")
+    elif freq == "Quarterly":
+        return dates.dt.to_period("Q")
+    elif freq == "Weekly":
+        # ISO week: year-week
+        return dates.dt.isocalendar().year.astype(str) + "-W" + dates.dt.isocalendar().week.astype(str).str.zfill(2)
+    elif freq == "Biweekly":
+        # Group into 2-week blocks based on day-of-year
+        return dates.dt.year.astype(str) + "-BW" + ((dates.dt.isocalendar().week - 1) // 2).astype(str).str.zfill(2)
+    else:
+        return dates.dt.to_period("M")
+
+
+def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000, rebalance_freq="Monthly"):
     """
-    Simulate the long/short monthly rebalance strategy using
+    Simulate the long/short rebalance strategy using
     cross_sectional_scores data.
 
     Args:
         n_long: Number of stocks to go long (lowest Z-scores)
         n_short: Number of stocks to go short (highest Z-scores)
         starting_capital: Initial portfolio value
+        rebalance_freq: One of 'Weekly', 'Biweekly', 'Monthly', 'Quarterly'
 
     Returns:
         equity_df: DataFrame with [date, equity, long_tickers, short_tickers]
-        trades_log: list of dicts describing each monthly rebalance
+        trades_log: list of dicts describing each rebalance
     """
     conn = sqlite3.connect(DB_PATH)
 
@@ -47,28 +70,28 @@ def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000):
     if df.empty:
         return pd.DataFrame(), []
 
-    # Add year-month for grouping
-    df["year_month"] = df["date"].dt.to_period("M")
+    # Group by rebalance period
+    df["rebal_period"] = _assign_rebalance_period(df["date"], rebalance_freq)
 
-    # Get all unique months
-    months = sorted(df["year_month"].unique())
+    # Get all unique rebalance periods
+    periods = sorted(df["rebal_period"].unique())
 
-    if len(months) < 2:
+    if len(periods) < 2:
         return pd.DataFrame(), []
 
-    # For each month, get the FIRST trading day's Z-scores to select positions
-    # Then track daily returns through that month
+    # For each period, get the FIRST trading day's Z-scores to select positions
+    # Then track daily returns through that period
     trades_log = []
     all_daily_returns = []
 
-    for i, month in enumerate(months):
-        month_data = df[df["year_month"] == month].copy()
-        if month_data.empty:
+    for i, period in enumerate(periods):
+        period_data = df[df["rebal_period"] == period].copy()
+        if period_data.empty:
             continue
 
-        # Get first day of this month to rank and select
-        first_day = month_data["date"].min()
-        ranking_day = month_data[month_data["date"] == first_day]
+        # Get first day of this period to rank and select
+        first_day = period_data["date"].min()
+        ranking_day = period_data[period_data["date"] == first_day]
 
         if len(ranking_day) < (n_long + n_short):
             continue  # Not enough tickers to fill both legs
@@ -78,8 +101,8 @@ def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000):
         long_tickers = sorted_rank.head(n_long)["ticker"].tolist()
         short_tickers = sorted_rank.tail(n_short)["ticker"].tolist()
 
-        # Get daily returns for all days in this month
-        all_dates = sorted(month_data["date"].unique())
+        # Get daily returns for all days in this period
+        all_dates = sorted(period_data["date"].unique())
 
         for j, date in enumerate(all_dates):
             if j == 0:
@@ -90,16 +113,16 @@ def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000):
 
             # Long leg: profit from price increases
             for ticker in long_tickers:
-                curr = month_data[(month_data["date"] == date) & (month_data["ticker"] == ticker)]
-                prev = month_data[(month_data["date"] == prev_date) & (month_data["ticker"] == ticker)]
+                curr = period_data[(period_data["date"] == date) & (period_data["ticker"] == ticker)]
+                prev = period_data[(period_data["date"] == prev_date) & (period_data["ticker"] == ticker)]
                 if not curr.empty and not prev.empty:
                     ret = (curr["adj_close"].iloc[0] / prev["adj_close"].iloc[0]) - 1
                     day_return += ret / n_long  # Equal weight
 
             # Short leg: profit from price decreases
             for ticker in short_tickers:
-                curr = month_data[(month_data["date"] == date) & (month_data["ticker"] == ticker)]
-                prev = month_data[(month_data["date"] == prev_date) & (month_data["ticker"] == ticker)]
+                curr = period_data[(period_data["date"] == date) & (period_data["ticker"] == ticker)]
+                prev = period_data[(period_data["date"] == prev_date) & (period_data["ticker"] == ticker)]
                 if not curr.empty and not prev.empty:
                     ret = (curr["adj_close"].iloc[0] / prev["adj_close"].iloc[0]) - 1
                     day_return -= ret / n_short  # Invert return for short
@@ -117,7 +140,7 @@ def simulate_ls_zscore(n_long=2, n_short=2, starting_capital=10000):
             })
 
         trades_log.append({
-            "month": str(month),
+            "month": str(period),
             "long": long_tickers,
             "short": short_tickers,
             "long_zscores": sorted_rank.head(n_long)["ev_sales_zscore"].tolist(),

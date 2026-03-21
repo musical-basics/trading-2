@@ -33,8 +33,7 @@ pages = {
         st.Page("pages/dashboard.py", title="Dashboard", icon="🏠", default=True),
     ],
     "🔬 Research": [
-        st.Page("pages/charts.py", title="Charts & Simulation", icon="📊"),
-        st.Page("pages/strategy_comparison.py", title="Strategy Comparison", icon="⚔️"),
+        st.Page("pages/strategy_lab.py", title="Strategy Lab", icon="🔬"),
         st.Page("pages/xs_scores.py", title="Cross-Sectional Scores", icon="🧬"),
         st.Page("pages/tournament.py", title="Strategy Tournament", icon="🏆"),
         st.Page("pages/wfo.py", title="WFO Backtester", icon="🔬"),
