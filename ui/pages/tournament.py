@@ -129,40 +129,52 @@ else:
             results = strats
 
     if results:
-        # ── Trim all strategies to the exact same trading dates ─
+        # ── Align all strategies to the exact same trading dates ─
+        # Build a DataFrame of all target trading dates
+        eval_dates_sorted = sorted(eval_dates)
+        full_dates_df = pd.DataFrame({"date": eval_dates_sorted})
+        full_dates_df["date"] = pd.to_datetime(full_dates_df["date"])
+
         trimmed_results = {}
         for name, (eq_df, _) in results.items():
             eq = eq_df.copy()
             eq["date"] = pd.to_datetime(eq["date"])
 
-            # Filter to only the target trading dates
-            eq_window = eq[eq["date"].isin(eval_dates)].copy()
+            # Filter to only dates within the trading window
+            eq_window = eq[eq["date"].isin(eval_dates)][["date", "daily_return"]].copy()
 
-            if eq_window.empty or len(eq_window) < 2:
+            # Merge with full date set — fill missing days with 0 (flat/no position)
+            merged = full_dates_df.merge(eq_window, on="date", how="left")
+            merged["daily_return"] = merged["daily_return"].fillna(0)
+            merged = merged.sort_values("date").reset_index(drop=True)
+
+            if merged.empty or len(merged) < 2:
                 continue
 
-            # Rebase equity to $10,000 from the window start
-            eq_window = eq_window.sort_values("date").reset_index(drop=True)
-            eq_window["equity"] = 10000 * (1 + eq_window["daily_return"].fillna(0)).cumprod()
+            # Rebase equity to $10,000
+            merged["equity"] = 10000 * (1 + merged["daily_return"]).cumprod()
 
-            actual_days = len(eq_window)
-            has_full_data = actual_days >= target_days * 0.95  # within 5% of target
+            actual_days = len(merged)
+            # Count how many days had real data (non-zero or from original)
+            days_with_data = len(eq_window)
+            has_full_data = days_with_data >= target_days * 0.95
 
-            # Recompute metrics over this window
-            dr = eq_window["daily_return"].fillna(0)
+            # Recompute metrics
+            dr = merged["daily_return"]
             sharpe = dr.mean() / dr.std() * np.sqrt(252) if dr.std() > 0 else 0
-            running_max = eq_window["equity"].expanding().max()
-            max_dd = (1 - eq_window["equity"] / running_max).max()
-            total_ret = eq_window["equity"].iloc[-1] / 10000 - 1
+            running_max = merged["equity"].expanding().max()
+            max_dd = (1 - merged["equity"] / running_max).max()
+            total_ret = merged["equity"].iloc[-1] / 10000 - 1
             cagr = (1 + total_ret) ** (252 / max(actual_days, 1)) - 1
 
             trimmed_results[name] = {
-                "eq": eq_window,
+                "eq": merged,
                 "total_return": total_ret,
                 "sharpe": sharpe,
                 "max_drawdown": max_dd,
                 "cagr": cagr,
                 "days": actual_days,
+                "days_with_data": days_with_data,
                 "target_days": target_days,
                 "full_data": has_full_data,
             }
